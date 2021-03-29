@@ -43,13 +43,13 @@ The first command will build the source of your application. The second command 
 * **AWS Region**: The AWS region you want to deploy your app to.
 * Parameter
   * **DynamoDBTableName**: Export target DynamoDB table name. (default: `table-name`)
-  * **DynamoDBSchema**: DynamoDB JSON schema for athena `CREATE TABLE`. (default: pk:struct<S:string>,field0:struct<S:string>,field1:struct<N:string>)
+  * **DynamoDBSchema**: DynamoDB JSON schema for `CREATE TABLE` by Athena. (default: pk:struct<S:string>,field0:struct<S:string>,field1:struct<N:string>)
   * **ExportS3Bucket**: S3 bucket name for exported JSON file from DynamoDB. (default: `your-bucket`)
   * **ExportS3Prefix**: S3 prefix for exported JSON file from DynamoDB. (default: `dynamodb/export`)
   * **OutputCsvS3Bucket**: S3 bucket name for query result output by Athena. (default: `your-bucket`)
   * **OutputCsvS3Prefix**: S3 prefix for query result output by Athena. (defualt: `ddb2csv`)
   * **RenameCsvS3Bucket**: S3 bukcet name for renamed csv file from the Output. (default: `your-bucket`)
-  * **RenameCsvS3PrefixFormat**: S3 prefix for renmaed csv file from the Output. It's allowd to specify strftime format. (default: `dst/%Y/%m/%d/%H`)
+  * **RenameCsvS3PrefixFormat**: S3 prefix for renamed csv file from the Output. It's allowd to specify strftime format. (default: `dst/%Y/%m/%d/%H`)
   * **RenameCsvTimezoneForPrefixFormat**: Timezone for above S3 prefix strftime format (default: `UTC` / example: `Asia/Tokyo`)
   * **RenameCsvFileName**: Renamed CSV file name. (default: `exported.csv`)
   * **CompressCsv**: `true` is enable to compress renamed csv file. (default: `false`)
