@@ -1,0 +1,435 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  DDB2CSV
+
+  Extract CSV from Amazon DynamoDB table with "Exporting DynamoDB table data to Amazon S3".
+
+Globals:
+  Function:
+    Timeout: 60
+
+Parameters:
+  DynamoDBTableName:
+    Description: Please type the DynamoDB table name.
+    Type: String
+    Default: 'table-name'
+  DynamoDBSchema:
+    Description: Please type the DynamoDB JSON schema for CREATE TABLE.
+    Type: String
+    Default: pk:struct<S:string>,field0:struct<S:string>,field1:struct<N:string>
+  ExportS3Bucket:
+    Description: Please type the S3 bucket name for export target.
+    Type: String
+    Default: 'your-bucket'
+  ExportS3Prefix:
+    Description: Please type the S3 prefix for export target.
+    Type: String
+    Default: 'dynamodb/export'
+  OutputCsvS3Bucket:
+    Description: Please type the S3 bucket name for csv output target.
+    Type: String
+    Default: 'your-bucket'
+  OutputCsvS3Prefix:
+    Description: Please type the S3 prefix for csv output target.
+    Type: String
+    Default: 'ddb2csv'
+  RenameCsvS3Bucket:
+    Description: Please type the S3 bucket name for renamed csv destination.
+    Type: String
+    Default: 'your-bucket'
+  RenameCsvS3PrefixFormat:
+    Description: "Please type the S3 bucket prefix for renamed csv destination with datetime format (%Y:year, %m:month, %d:day, %H:hour)."
+    Type: String
+    Default: 'dst/%Y/%m/%d/%H'
+  RenameCsvTimezoneForPrefixFormat:
+    Description: "Please type the time zone for s3 prefix format (JST: 'Asia/Tokyo', UTC: 'UTC')"
+    Type: String
+    Default: 'UTC'
+  RenameCsvFileName:
+    Description: "Please type the csv file name to rename."
+    Type: String
+    Default: 'exported.csv'
+  CompressCsv:
+    Description: "Please type true or false for enable to compress file"
+    Default: false
+    Type: String
+    AllowedValues: [true, false]
+  AthenaDatabase:
+    Description: Please type the athena database name.
+    Type: String
+    Default: 'default'
+  AthenaTemporaryTable:
+    Description: Please type the athena temporary table name to execute query.
+    Type: String
+    Default: 'ddb2csv_exported'
+  AthenaQueryFields:
+    Description: Please type the fields for query.
+    Type: String
+    Default: Item.pk.S as pk, Item.field0.S as field0, Item.field1.N as field1
+  LogLevel:
+    Description: Please type the log level for lambda (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    Type: String
+    Default: WARNING
+
+Conditions:
+  HasExportS3Prefix: !Not [ !Equals [ !Ref ExportS3Prefix, "" ] ]
+  HasOutputCsvS3Prefix: !Not [ !Equals [ !Ref OutputCsvS3Prefix, "" ] ]
+  HasRenameCsvS3PrefixFormat: !Not [ !Equals [ !Ref RenameCsvS3PrefixFormat, "" ] ]
+  IsCompress: !Equals [ !Ref CompressCsv, "true" ]
+
+Resources:
+  #
+  # Lambda for export ddb
+  #
+  ExportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda-export-ddb/
+      FunctionName: !Sub "${AWS::StackName}-ddb2csv-export-ddb"
+      Handler: app.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt ExportFunctionRole.Arn
+      Runtime: python3.8
+      Environment:
+        Variables:
+          LOG_LEVEL: !Sub "${LogLevel}"
+          TABLE_ARN: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}"
+          S3_BUCKET: !Sub "${ExportS3Bucket}"
+          S3_PREFIX: !Sub "${ExportS3Prefix}"
+
+  #
+  # Lambda for retrieve status
+  #
+  RetrieveStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda-retrieve-status/
+      FunctionName: !Sub "${AWS::StackName}-ddb2csv-retrieve-status"
+      Handler: app.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt RetrieveStatusFunctionRole.Arn
+      Runtime: python3.8
+      Environment:
+        Variables:
+          LOG_LEVEL: !Sub "${LogLevel}"
+
+  #
+  # Lambda for rename csv
+  #
+  RenameCsvFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda-rename-csv/
+      FunctionName: !Sub "${AWS::StackName}-ddb2csv-rename-csv"
+      Handler: app.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt RenameCsvFunctionRole.Arn
+      Runtime: python3.8
+      Timeout: 900
+      Environment:
+        Variables:
+          LOG_LEVEL: !Sub "${LogLevel}"
+          S3_BUCKET: !Sub "${RenameCsvS3Bucket}"
+          S3_PREFIX_FORMAT: !Sub "${RenameCsvS3PrefixFormat}"
+          S3_TIMEZONE_FOR_PREFIX_FORMAT: !Sub "${RenameCsvTimezoneForPrefixFormat}"
+          S3_CSV_FILE_NAME: !Sub "${RenameCsvFileName}"
+
+  #
+  # Lambda for rename and compress csv
+  #
+  RenameCompressCsvFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambda-rename-compress-csv/
+      FunctionName: !Sub "${AWS::StackName}-ddb2csv-rename-compress-csv"
+      Handler: app.lambdaHandler
+      MemorySize: 2048
+      Role: !GetAtt RenameCsvFunctionRole.Arn
+      Runtime: nodejs14.x
+      Timeout: 900
+      Environment:
+        Variables:
+          LOG_LEVEL: !Sub "${LogLevel}"
+          S3_BUCKET: !Sub "${RenameCsvS3Bucket}"
+          S3_PREFIX_FORMAT: !Sub "${RenameCsvS3PrefixFormat}"
+          S3_TIMEZONE_FOR_PREFIX_FORMAT: !Sub "${RenameCsvTimezoneForPrefixFormat}"
+          S3_CSV_FILE_NAME: !Sub "${RenameCsvFileName}"
+
+  #
+  # Role for export ddb
+  #
+  ExportFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ddb2csv-ExportDDBRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action: sts:AssumeRole
+          Principal:
+            Service: lambda.amazonaws.com
+      Policies:
+      -
+        PolicyName: root
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          -
+            Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          -
+            Effect: Allow
+            Action:
+            - dynamodb:ExportTableToPointInTime
+            Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}"
+          -
+            Effect: Allow
+            Action:
+            - s3:PutObject
+            - s3:AbortMultipartUpload
+            Resource: !Sub "arn:aws:s3:::${ExportS3Bucket}/*"
+  #
+  # Role for retrieve status
+  #
+  RetrieveStatusFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ddb2csv-RetrieveStatusRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action: sts:AssumeRole
+          Principal:
+            Service: lambda.amazonaws.com
+      Policies:
+      -
+        PolicyName: root
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          -
+            Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          -
+            Effect: Allow
+            Action:
+            - dynamodb:DescribeExport
+            Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}/export/*"
+  #
+  # Role for export ddb
+  #
+  RenameCsvFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ddb2csv-RenameCsvRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action: sts:AssumeRole
+          Principal:
+            Service: lambda.amazonaws.com
+      Policies:
+      -
+        PolicyName: root
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          -
+            Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          -
+            Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+            - s3:AbortMultipartUpload
+            Resource: 
+            - !Sub "arn:aws:s3:::${OutputCsvS3Bucket}/*"
+            - !Sub "arn:aws:s3:::${RenameCsvS3Bucket}/*"
+  #
+  # Step Functions State Machine
+  #
+  StateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "${AWS::StackName}-ddb2csvStateMachine"
+      DefinitionUri: statemachine/ddb2csv.asl.json
+      DefinitionSubstitutions:
+        ExportFunction: !GetAtt ExportFunction.Arn
+        RetrieveStatusFunction: !GetAtt RetrieveStatusFunction.Arn
+        RenameCsvFunction: !If
+        - IsCompress
+        - !GetAtt RenameCompressCsvFunction.Arn
+        - !GetAtt RenameCsvFunction.Arn
+        ExportS3Location: !If
+        - HasExportS3Prefix
+        - !Sub "${ExportS3Bucket}/${ExportS3Prefix}"
+        - !Sub "${ExportS3Bucket}"
+        OutputCsvS3Location: !If
+        - HasOutputCsvS3Prefix
+        - !Sub "${OutputCsvS3Bucket}/${OutputCsvS3Prefix}"
+        - !Sub "${OutputCsvS3Bucket}"
+        AthenaDatabase: !Sub "${AthenaDatabase}"
+        AthenaTemporaryTable: !Sub "${AthenaTemporaryTable}"
+        DynamoDBSchema: !Sub "${DynamoDBSchema}"
+        AthenaQueryFields: !Sub "${AthenaQueryFields}"
+      Events:
+        CWSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: 'cron(0 * * * ? *)'
+            Name: !Sub "${AWS::StackName}-ddb2csv-Schedule"
+            Description: ddb2csv schedule
+            Enabled: False
+      Role: !GetAtt StateMachineRole.Arn
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+        IncludeExecutionData: True
+        Level: ALL
+
+  #
+  # Role for StateMachine
+  #
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ddb2csv-StateMachineRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action: sts:AssumeRole
+          Principal:
+            Service: states.amazonaws.com
+      Policies:
+      -
+        PolicyName: root
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+          -
+            Effect: Allow
+            Action:
+            #- logs:CreateLogGroup
+            #- logs:CreateLogStream
+            #- logs:PutLogEvents
+            - logs:CreateLogDelivery
+            - logs:GetLogDelivery
+            - logs:UpdateLogDelivery
+            - logs:DeleteLogDelivery
+            - logs:ListLogDeliveries
+            - logs:PutResourcePolicy
+            - logs:DescribeResourcePolicies
+            - logs:DescribeLogGroups
+            Resource: '*'
+          -
+            Effect: Allow
+            Action:
+            - lambda:InvokeFunction
+            Resource: '*'
+          -
+            Effect: Allow
+            Action:
+            - glue:CreateDatabase
+            - glue:GetDatabase
+            - glue:GetDatabases
+            - glue:UpdateDatabase
+            - glue:DeleteDatabase
+            - glue:CreateTable
+            - glue:UpdateTable
+            - glue:GetTable
+            - glue:GetTables
+            - glue:DeleteTable
+            - glue:BatchDeleteTable
+            - glue:BatchCreatePartition
+            - glue:CreatePartition
+            - glue:UpdatePartition
+            - glue:GetPartition
+            - glue:GetPartitions
+            - glue:BatchGetPartition
+            - glue:DeletePartition
+            - glue:BatchDeletePartition
+            Resource:
+            - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+            - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/*"
+            - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/*"
+          -
+            Effect: Allow
+            Action:
+            - athena:getQueryResults
+            - athena:startQueryExecution
+            - athena:stopQueryExecution
+            - athena:getQueryExecution
+            - athena:getDataCatalog
+            Resource:
+            - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+            - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
+          -
+            Effect: Allow
+            Action:
+            - s3:CreateBucket
+            - s3:GetBucketLocation
+            - s3:ListBucket
+            - s3:ListBucketMultipartUploads
+            - s3:GetObject
+            - s3:PutObject
+            - s3:ListMultipartUploadParts
+            - s3:AbortMultipartUpload
+            Resource:
+            - !Sub "arn:aws:s3:::${ExportS3Bucket}"
+            - !Sub "arn:aws:s3:::${ExportS3Bucket}/*"
+            - !Sub "arn:aws:s3:::${OutputCsvS3Bucket}"
+            - !Sub "arn:aws:s3:::${OutputCsvS3Bucket}/*"
+
+  #
+  # Log Group for StateMachine
+  #
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName : !Sub "/aws/state/ddb2csv-${AWS::StackName}-"
+
+Outputs:
+  ExportFunctionArn:
+    Description: 'Lambda ARN to export DynamoDB'
+    Value: !GetAtt ExportFunction.Arn
+  RetrieveStatusFunctionArn:
+    Description: 'Lambda ARN to retrieve export status'
+    Value: !GetAtt RetrieveStatusFunction.Arn
+  RenameCsvFunctionArn:
+    Description: 'Lambda ARN to rename (and compress if enable) csv file'
+    Value: !If [ IsCompress, !GetAtt RenameCompressCsvFunction.Arn, !GetAtt RenameCsvFunction.Arn ]
+  ExportS3Location:
+    Description: 'Location of exported files from DynamoDB'
+    Value: !If [ HasExportS3Prefix, !Sub "${ExportS3Bucket}/${ExportS3Prefix}", !Sub "${ExportS3Bucket}" ]
+  OutputCsvS3Location:
+    Description: 'Location of output csv file'
+    Value: !If [ HasOutputCsvS3Prefix, !Sub "${OutputCsvS3Bucket}/${OutputCsvS3Prefix}", !Sub "${OutputCsvS3Bucket}" ]
+  RenameCsvS3Location:
+    Description: 'Location of renamed csv file'
+    Value: !If [ HasRenameCsvS3PrefixFormat, !Sub "${RenameCsvS3Bucket}/${RenameCsvS3PrefixFormat}/${RenameCsvFileName}", !Sub "${RenameCsvS3Bucket}/${RenameCsvFileName}" ]
+  TimeZone:
+    Description: 'Time zone for time format of renamed csv prefix'
+    Value: !Sub "${RenameCsvTimezoneForPrefixFormat}"
+  LogLevel:
+    Description: 'Log Level for Lambda'
+    Value: !Sub "${LogLevel}"

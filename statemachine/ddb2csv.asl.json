@@ -1,0 +1,135 @@
+{
+    "Comment": "Export DynamoDB to S3 and convert to CSV using Athena",
+    "StartAt": "ExportDynamoDB",
+    "States": {
+        "ExportDynamoDB": {
+            "Type": "Task",
+            "Resource": "${ExportFunction}",
+            "OutputPath": "$.output",
+            "Next": "WaitFor5min"
+        },
+        "WaitFor5min": {
+            "Type": "Wait",
+            "Seconds": 300,
+            "Next": "RetrieveExportStatus"
+        },
+        "RetrieveExportStatus": {
+            "Type": "Task",
+            "Resource": "${RetrieveStatusFunction}",
+            "OutputPath": "$.output",
+            "Next": "JudgeExportEnd"
+        },
+        "JudgeExportEnd": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.ExportStatus",
+                    "StringEquals": "COMPLETED",
+                    "Next": "CreateTable"
+                },
+				{
+					"Variable": "$.ExportStatus",
+					"StringEquals": "IN_PROGRESS",
+					"Next": "WaitFor1min"
+				},
+				{
+					"Variable": "$.ExportStatus",
+					"StringEquals": "FAILED",
+					"Next": "Error"
+				}
+            ],
+            "Default": "Error"
+        },
+        "WaitFor1min": {
+            "Type": "Wait",
+            "Seconds": 60,
+            "Next": "RetrieveExportStatus"
+        },
+        "CreateTable": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+            "Parameters": {
+                "QueryString.$": "States.Format('CREATE EXTERNAL TABLE IF NOT EXISTS ${AthenaDatabase}.${AthenaTemporaryTable} ( Item struct < ${DynamoDBSchema} > ) ROW FORMAT SERDE \\'org.openx.data.jsonserde.JsonSerDe\\' LOCATION \\'s3://${ExportS3Location}/AWSDynamoDB/{}/data/\\' TBLPROPERTIES (\\'has_encrypted_data\\'=\\'true\\')', $.ExportId)",
+                "ResultConfiguration": {
+                    "OutputLocation": "s3://${OutputCsvS3Location}/ddl"
+                }
+            },
+            "ResultPath": "$.createResult",
+            "OutputPath": "$",
+            "Next": "QueryTable",
+            "Catch": [
+                {
+                    "ErrorEquals": [ "States.ALL" ],
+                    "Next": "Error"
+                }
+            ]
+        },
+        "QueryTable": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+            "Parameters": {
+                "QueryString": "SELECT ${AthenaQueryFields} FROM ${AthenaDatabase}.${AthenaTemporaryTable}",
+                "ResultConfiguration": {
+                    "OutputLocation": "s3://${OutputCsvS3Location}"
+                }
+            },
+            "ResultPath": "$.queryResult",
+            "OutputPath": "$",
+            "Next": "RenameCsvAndDropTable",
+            "Catch": [
+                {
+                    "ErrorEquals": [ "States.ALL" ],
+                    "Next": "DropTableFallback"
+                }
+            ]
+        },
+        "RenameCsvAndDropTable" : {
+            "Type": "Parallel",
+            "Branches": [
+                {
+                    "StartAt": "RenameCsv",
+                    "States": {
+                        "RenameCsv": {
+                            "Type": "Task",
+                            "Resource": "${RenameCsvFunction}",
+                            "End": true
+                        }
+                    }
+                },
+                {
+                    "StartAt": "DropTable",
+                    "States": {
+                        "DropTable": {
+                            "Type": "Task",
+                            "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+                            "Parameters": {
+                                "QueryString": "DROP TABLE IF EXISTS ${AthenaDatabase}.${AthenaTemporaryTable}",
+                                "ResultConfiguration": {
+                                    "OutputLocation": "s3://${OutputCsvS3Location}/ddl"
+                                }
+                            },
+                            "End": true
+                        }
+                    }
+                }
+            ],
+            "End": true
+        },
+        "DropTableFallback" : {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+            "Parameters": {
+                "QueryString": "DROP TABLE IF EXISTS ${AthenaDatabase}.${AthenaTemporaryTable}",
+                "ResultConfiguration": {
+                    "OutputLocation": "s3://${OutputCsvS3Location}/ddl"
+                }
+            },
+            "Next": "Error"
+        },
+        "Error": {
+            "Type": "Fail",
+            "Cause": "Exporting DynamoDB is failed.",
+            "Error": "Export Errors"
+        }
+    }
+}
