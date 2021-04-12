@@ -1,9 +1,29 @@
 # DynamoDB to CSV
 
-Extract CSV from Amazon DynamoDB table with "Exporting DynamoDB table data to Amazon S3".
+Extract CSV from Amazon DynamoDB table with "Exporting DynamoDB table data to Amazon S3" and Amazon Athena.
 Support large CSV ( < 15 GB ).
 
+## Overview
+
+Following processes are executed step by step using AWS StepFunctions.
+
 ![Step Functions](doc/stepfunctions.png "Step Functions")
+
+1. "**ExportDynamoDB**" : Export "DynamoDB JSON" to S3 bucket.
+2. "**WaitFor5min**" : Wait for completing to export for 5 min. (It's takes usual over 5 min.)
+3. "**RetrieveExportStatus**" : Retrieve exporting status.
+4. "**JudgeExportEnd**" : If needed, wait for 1 min, And then back to above 3. step.
+5. "**CreateTable**" : Create Athena's table from exported JSON.
+6. "**QueryTable**" : Execute select query on created table and then a single csv file that is query result is created on S3 bucket.
+7. "**RenameCsv**" : Rename and move csv file and if needed compress. Rename supports `strftime` format.
+8. "**DropTable**" : Drop table that is created when above 5. step.
+
+## Benefits
+
+* **No cunsume DynamoDB capacity** : The feature "Exporting DynamoDB table data to Amazon S3" does not consume DynamoDB capacity.
+* **Pay as you go** : Because of serverless architecture, you pay as you go.
+
+## Components
 
 This project contains source code and supporting files for a serverless application that you can deploy with the SAM CLI. It includes the following files and folders.
 
