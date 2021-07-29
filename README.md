@@ -1,8 +1,8 @@
 # DynamoDB to CSV
 
 Extract CSV from Amazon DynamoDB table with "Exporting DynamoDB table data to Amazon S3" and Amazon Athena.
-Support large CSV ( < 15 GB ).
-
+Support large CSV ( < 15 GB ).  
+日本語の情報(For Japanese) : https://blog.msysh.me/posts/2021/04/csv_from_dynamodb_no_consume_capacity.html
 ## Overview
 
 Following processes are executed step by step using AWS StepFunctions.
